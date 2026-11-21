@@ -23,6 +23,7 @@ type Model struct {
 	Projector string // optional mmproj file for vision models
 	Ctx       int    // context length (0 = default)
 	Embedding bool   // serve embeddings instead of chat
+	Pooling   string // embedding pooling override ("mean"); empty = the model's own
 }
 
 func (m Model) key() string {
@@ -225,6 +226,9 @@ func (r *Runner) start(ctx context.Context, m Model) (*Loaded, error) {
 	}
 	if m.Embedding {
 		args = append(args, "--embeddings")
+		if m.Pooling != "" {
+			args = append(args, "--pooling", m.Pooling)
+		}
 	}
 	args = append(args, r.ExtraArgs...)
 	cmd := exec.Command(r.Binary, args...)

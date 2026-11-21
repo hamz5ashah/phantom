@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hamz5ashah/phantom/internal/api"
@@ -209,7 +210,7 @@ func (s *Server) loadOnly(w http.ResponseWriter, r *http.Request, model string, 
 	writeJSON(w, api.ChatResponse{Model: model, CreatedAt: api.Now(), Response: &empty, Done: true, DoneReason: "load"})
 }
 
-func (s *Server) acquire(ctx context.Context, model string, numCtx int, ka *api.Duration, embedding bool) (*runner.Loaded, func(), time.Duration, error) {
+func (s *Server) acquire(ctx context.Context, model string, numCtx int, ka *api.Duration, embedding bool, pooling ...string) (*runner.Loaded, func(), time.Duration, error) {
 	m, err := s.Store.Get(model)
 	if err != nil {
 		return nil, nil, 0, err
@@ -223,8 +224,12 @@ func (s *Server) acquire(ctx context.Context, model string, numCtx int, ka *api.
 	if ka != nil {
 		keep = &ka.Duration
 	}
+	rm := runner.Model{Name: m.Name.String(), Weights: weights, Projector: proj, Ctx: numCtx, Embedding: embedding}
+	if len(pooling) > 0 {
+		rm.Pooling = pooling[0]
+	}
 	start := time.Now()
-	l, release, err := s.Runner.Acquire(ctx, runner.Model{Name: m.Name.String(), Weights: weights, Projector: proj, Ctx: numCtx, Embedding: embedding}, keep)
+	l, release, err := s.Runner.Acquire(ctx, rm, keep)
 	return l, release, time.Since(start), err
 }
 
@@ -331,24 +336,42 @@ func (s *Server) embed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	start := time.Now()
-	l, release, loadDur, err := s.acquire(r.Context(), req.Model, req.Options.NumCtx, req.KeepAlive, true)
-	if err != nil {
-		writeErr(w, statusFor(err), err)
-		return
-	}
-	defer release()
 	body, _ := json.Marshal(map[string]any{"input": inputs})
-	up, _ := http.NewRequestWithContext(r.Context(), http.MethodPost, l.URL+"/v1/embeddings", bytes.NewReader(body))
-	up.Header.Set("Content-Type", "application/json")
-	resp, err := s.upstream.Do(up)
-	if err != nil {
-		writeErr(w, http.StatusBadGateway, fmt.Errorf("llama-server: %w", err))
-		return
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	var (
+		resp    *http.Response
+		loadDur time.Duration
+	)
+	// Chat models have no pooling of their own, which llama.cpp refuses for
+	// OpenAI-style embeddings; reload such a model with mean pooling once.
+	for _, pooling := range []string{"", "mean"} {
+		l, release, ld, err := s.acquire(r.Context(), req.Model, req.Options.NumCtx, req.KeepAlive, true, pooling)
+		if err != nil {
+			writeErr(w, statusFor(err), err)
+			return
+		}
+		var once sync.Once
+		releaseOnce := func() { once.Do(release) }
+		defer releaseOnce()
+		loadDur += ld
+		up, _ := http.NewRequestWithContext(r.Context(), http.MethodPost, l.URL+"/v1/embeddings", bytes.NewReader(body))
+		up.Header.Set("Content-Type", "application/json")
+		resp, err = s.upstream.Do(up)
+		if err != nil {
+			writeErr(w, http.StatusBadGateway, fmt.Errorf("llama-server: %w", err))
+			return
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			break
+		}
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		writeErr(w, resp.StatusCode, errors.New(upstreamError(msg)))
+		text := upstreamError(msg)
+		if pooling == "" && strings.Contains(strings.ToLower(text), "pooling") {
+			releaseOnce()
+			s.Runner.Unload(mustName(req.Model))
+			continue
+		}
+		writeErr(w, resp.StatusCode, errors.New(text))
 		return
 	}
 	var out struct {

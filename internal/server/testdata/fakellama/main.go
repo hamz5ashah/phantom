@@ -18,6 +18,7 @@ func main() {
 	flag.Int("n-gpu-layers", 0, "")
 	flag.String("mmproj", "", "")
 	embeddings := flag.Bool("embeddings", false, "")
+	pooling := flag.String("pooling", "", "")
 	flag.Parse()
 	if _, err := os.Stat(*model); err != nil {
 		fmt.Fprintln(os.Stderr, "model missing:", err)
@@ -26,6 +27,11 @@ func main() {
 	http.HandleFunc("/v1/embeddings", func(w http.ResponseWriter, r *http.Request) {
 		if !*embeddings {
 			http.Error(w, `{"error":{"message":"embeddings not enabled"}}`, http.StatusNotImplemented)
+			return
+		}
+		// Like llama.cpp with a chat model: no pooling unless one is set.
+		if *pooling == "" {
+			http.Error(w, `{"error":{"message":"Pooling type 'none' is not OAI compatible. Please use a different pooling type"}}`, http.StatusBadRequest)
 			return
 		}
 		var req struct {
