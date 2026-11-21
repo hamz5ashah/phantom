@@ -18,8 +18,8 @@ import (
 	"strings"
 )
 
-// ReleasesAPI is the latest-release endpoint (overridable in tests).
-var ReleasesAPI = "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
+// ReleasesAPI lists recent llama.cpp releases (overridable in tests).
+var ReleasesAPI = "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=8"
 
 // RuntimeDir is where llama-server is installed: PHANTOM_RUNTIME or ~/.phantom/runtime.
 func RuntimeDir() string {
@@ -64,7 +64,7 @@ func pick(assets []asset, goos, arch, backend string) (asset, error) {
 		switch backend {
 		case "cpu":
 			ok = (goos == "windows" && hasBackend("cpu")) ||
-				(goos == "linux" && !hasBackend("vulkan") && !hasBackend("cuda") && !hasBackend("rocm") && !hasBackend("sycl") && !hasBackend("s390x"))
+				(goos == "linux" && !hasBackend("vulkan") && !hasBackend("cuda") && !hasBackend("rocm") && !hasBackend("sycl") && !hasBackend("openvino") && !hasBackend("zdnn") && !strings.Contains(n, "s390x"))
 		case "metal":
 			ok = goos == "darwin"
 		default:
@@ -102,15 +102,39 @@ func Install(ctx context.Context, dir, backend string, log func(string)) (string
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("GitHub returned %s", resp.Status)
 	}
-	var rel struct {
-		Tag    string  `json:"tag_name"`
-		Assets []asset `json:"assets"`
+	var releases []struct {
+		Tag        string  `json:"tag_name"`
+		Draft      bool    `json:"draft"`
+		Prerelease bool    `json:"prerelease"`
+		Assets     []asset `json:"assets"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
+	if err := json.NewDecoder(resp.Body).Decode(&releases); err != nil {
 		return "", err
 	}
-	a, err := pick(rel.Assets, runtime.GOOS, runtime.GOARCH, backend)
+	// llama.cpp publishes several times a day and a brand-new release can
+	// still be missing files, so take the newest one that has our build.
+	var rel struct {
+		Tag string
+	}
+	var a asset
+	err = errors.New("no llama.cpp releases found")
+	for _, r := range releases {
+		if r.Draft || r.Prerelease {
+			continue
+		}
+		if a, err = pick(r.Assets, runtime.GOOS, runtime.GOARCH, backend); err == nil {
+			rel.Tag = r.Tag
+			break
+		}
+	}
 	if err != nil {
+		if len(releases) > 0 {
+			names := []string{}
+			for _, x := range releases[0].Assets {
+				names = append(names, x.Name)
+			}
+			err = fmt.Errorf("%w (files in %s: %s)", err, releases[0].Tag, strings.Join(names, ", "))
+		}
 		return "", err
 	}
 	log(fmt.Sprintf("Downloading llama.cpp %s (%s, %d MB)...", rel.Tag, a.Name, a.Size>>20))

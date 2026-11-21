@@ -7,16 +7,27 @@ import (
 	"testing"
 )
 
+// Real file names from llama.cpp's release-publish workflow.
 var releaseAssets = []asset{
 	{Name: "cudart-llama-bin-win-cuda-12.4-x64.zip"},
+	{Name: "cudart-llama-b7000-bin-ubuntu-cuda-12.8-x64.tar.gz"},
 	{Name: "llama-b7000-bin-macos-arm64.tar.gz"},
 	{Name: "llama-b7000-bin-macos-x64.tar.gz"},
 	{Name: "llama-b7000-bin-ubuntu-x64.tar.gz"},
+	{Name: "llama-b7000-bin-ubuntu-arm64.tar.gz"},
+	{Name: "llama-b7000-bin-ubuntu-s390x.tar.gz"},
+	{Name: "llama-b7000-bin-ubuntu-26.04-s390x.tar.gz"},
 	{Name: "llama-b7000-bin-ubuntu-vulkan-x64.tar.gz"},
+	{Name: "llama-b7000-bin-ubuntu-vulkan-arm64.tar.gz"},
+	{Name: "llama-b7000-bin-ubuntu-cuda-12.8-x64.tar.gz"},
+	{Name: "llama-b7000-bin-ubuntu-rocm-10.0-x64.tar.gz"},
+	{Name: "llama-b7000-bin-ubuntu-openvino-2026.4.1-x64.tar.gz"},
+	{Name: "llama-b7000-bin-linux-arm64-snapdragon.tar.gz"},
 	{Name: "llama-b7000-bin-win-cpu-x64.zip"},
 	{Name: "llama-b7000-bin-win-cpu-arm64.zip"},
 	{Name: "llama-b7000-bin-win-cuda-12.4-x64.zip"},
 	{Name: "llama-b7000-bin-win-vulkan-x64.zip"},
+	{Name: "llama-b7000-bin-win-vulkan-arm64.zip"},
 	{Name: "llama-b7000-xcframework.zip"},
 }
 
@@ -36,7 +47,10 @@ func TestPick(t *testing.T) {
 			t.Errorf("%s/%s/%s: got %q (%v), want %q", c.goos, c.arch, c.backend, a.Name, err, c.want)
 		}
 	}
-	if _, err := pick(releaseAssets, "linux", "arm64", "vulkan"); err == nil {
+	if a, _ := pick(releaseAssets, "linux", "arm64", "cpu"); a.Name != "llama-b7000-bin-ubuntu-arm64.tar.gz" {
+		t.Errorf("linux arm64 cpu: got %q", a.Name)
+	}
+	if _, err := pick(releaseAssets, "linux", "arm64", "rocm"); err == nil {
 		t.Error("expected an error when no build exists")
 	}
 }
