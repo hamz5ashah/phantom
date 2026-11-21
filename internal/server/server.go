@@ -45,6 +45,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/delete", s.del)
 	mux.HandleFunc("POST /api/chat", s.chat)
 	mux.HandleFunc("POST /api/generate", s.generate)
+	mux.HandleFunc("POST /api/embed", s.embed)
+	mux.HandleFunc("POST /api/embeddings", s.embed)
 	mux.HandleFunc("GET /v1/models", s.openAIModels)
 	mux.HandleFunc("POST /v1/chat/completions", s.openAIProxy)
 	mux.HandleFunc("POST /v1/completions", s.openAIProxy)
@@ -197,7 +199,7 @@ func (s *Server) loadOnly(w http.ResponseWriter, r *http.Request, model string, 
 		writeJSON(w, api.ChatResponse{Model: model, CreatedAt: api.Now(), Done: true, DoneReason: "unload"})
 		return
 	}
-	_, release, _, err := s.acquire(r.Context(), model, 0, ka)
+	_, release, _, err := s.acquire(r.Context(), model, 0, ka, false)
 	if err != nil {
 		writeErr(w, statusFor(err), err)
 		return
@@ -207,7 +209,7 @@ func (s *Server) loadOnly(w http.ResponseWriter, r *http.Request, model string, 
 	writeJSON(w, api.ChatResponse{Model: model, CreatedAt: api.Now(), Response: &empty, Done: true, DoneReason: "load"})
 }
 
-func (s *Server) acquire(ctx context.Context, model string, numCtx int, ka *api.Duration) (*runner.Loaded, func(), time.Duration, error) {
+func (s *Server) acquire(ctx context.Context, model string, numCtx int, ka *api.Duration, embedding bool) (*runner.Loaded, func(), time.Duration, error) {
 	m, err := s.Store.Get(model)
 	if err != nil {
 		return nil, nil, 0, err
@@ -222,7 +224,7 @@ func (s *Server) acquire(ctx context.Context, model string, numCtx int, ka *api.
 		keep = &ka.Duration
 	}
 	start := time.Now()
-	l, release, err := s.Runner.Acquire(ctx, runner.Model{Name: m.Name.String(), Weights: weights, Projector: proj, Ctx: numCtx}, keep)
+	l, release, err := s.Runner.Acquire(ctx, runner.Model{Name: m.Name.String(), Weights: weights, Projector: proj, Ctx: numCtx, Embedding: embedding}, keep)
 	return l, release, time.Since(start), err
 }
 
@@ -233,7 +235,7 @@ func (s *Server) complete(w http.ResponseWriter, r *http.Request, req *api.ChatR
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	l, release, loadDur, err := s.acquire(r.Context(), req.Model, req.Options.NumCtx, req.KeepAlive)
+	l, release, loadDur, err := s.acquire(r.Context(), req.Model, req.Options.NumCtx, req.KeepAlive, false)
 	if err != nil {
 		writeErr(w, statusFor(err), err)
 		return
@@ -295,6 +297,89 @@ func (s *Server) complete(w http.ResponseWriter, r *http.Request, req *api.ChatR
 	nd.send(asm.Final())
 }
 
+// --- embeddings ---
+
+// embed serves both Ollama forms: /api/embed {"input": string|[]string} ->
+// {"embeddings": [[...]]} and the older /api/embeddings {"prompt": string} ->
+// {"embedding": [...]}.
+func (s *Server) embed(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Model     string          `json:"model"`
+		Input     json.RawMessage `json:"input"`
+		Prompt    string          `json:"prompt"`
+		KeepAlive *api.Duration   `json:"keep_alive"`
+		Options   api.Options     `json:"options"`
+	}
+	if !readJSON(w, r, &req) {
+		return
+	}
+	legacy := r.URL.Path == "/api/embeddings"
+	var inputs []string
+	if legacy {
+		inputs = []string{req.Prompt}
+	} else if len(req.Input) > 0 {
+		var one string
+		if json.Unmarshal(req.Input, &one) == nil {
+			inputs = []string{one}
+		} else if err := json.Unmarshal(req.Input, &inputs); err != nil {
+			writeErr(w, http.StatusBadRequest, errors.New(`"input" must be a string or a list of strings`))
+			return
+		}
+	}
+	if len(inputs) == 0 {
+		writeJSON(w, map[string]any{"model": req.Model, "embeddings": [][]float64{}})
+		return
+	}
+	start := time.Now()
+	l, release, loadDur, err := s.acquire(r.Context(), req.Model, req.Options.NumCtx, req.KeepAlive, true)
+	if err != nil {
+		writeErr(w, statusFor(err), err)
+		return
+	}
+	defer release()
+	body, _ := json.Marshal(map[string]any{"input": inputs})
+	up, _ := http.NewRequestWithContext(r.Context(), http.MethodPost, l.URL+"/v1/embeddings", bytes.NewReader(body))
+	up.Header.Set("Content-Type", "application/json")
+	resp, err := s.upstream.Do(up)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, fmt.Errorf("llama-server: %w", err))
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		writeErr(w, resp.StatusCode, errors.New(upstreamError(msg)))
+		return
+	}
+	var out struct {
+		Data []struct {
+			Index     int       `json:"index"`
+			Embedding []float64 `json:"embedding"`
+		} `json:"data"`
+		Usage struct {
+			PromptTokens int `json:"prompt_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	vecs := make([][]float64, len(inputs))
+	for _, d := range out.Data {
+		if d.Index >= 0 && d.Index < len(vecs) {
+			vecs[d.Index] = d.Embedding
+		}
+	}
+	if legacy {
+		writeJSON(w, map[string]any{"embedding": vecs[0]})
+		return
+	}
+	writeJSON(w, map[string]any{
+		"model": req.Model, "embeddings": vecs, "prompt_eval_count": out.Usage.PromptTokens,
+		"total_duration": int64(time.Since(start)), "load_duration": int64(loadDur),
+	})
+}
+
 // --- OpenAI-compatible passthrough ---
 
 func (s *Server) openAIModels(w http.ResponseWriter, _ *http.Request) {
@@ -319,7 +404,7 @@ func (s *Server) openAIProxy(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New(`request needs a "model"`))
 		return
 	}
-	l, release, _, err := s.acquire(r.Context(), head.Model, 0, nil)
+	l, release, _, err := s.acquire(r.Context(), head.Model, 0, nil, r.URL.Path == "/v1/embeddings")
 	if err != nil {
 		writeErr(w, statusFor(err), err)
 		return

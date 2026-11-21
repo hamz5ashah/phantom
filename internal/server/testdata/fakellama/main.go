@@ -17,11 +17,27 @@ func main() {
 	flag.Bool("jinja", false, "")
 	flag.Int("n-gpu-layers", 0, "")
 	flag.String("mmproj", "", "")
+	embeddings := flag.Bool("embeddings", false, "")
 	flag.Parse()
 	if _, err := os.Stat(*model); err != nil {
 		fmt.Fprintln(os.Stderr, "model missing:", err)
 		os.Exit(1)
 	}
+	http.HandleFunc("/v1/embeddings", func(w http.ResponseWriter, r *http.Request) {
+		if !*embeddings {
+			http.Error(w, `{"error":{"message":"embeddings not enabled"}}`, http.StatusNotImplemented)
+			return
+		}
+		var req struct {
+			Input []string `json:"input"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+		data := []any{}
+		for i, in := range req.Input {
+			data = append(data, map[string]any{"index": i, "embedding": []float64{float64(len(in)), 0.5}})
+		}
+		json.NewEncoder(w).Encode(map[string]any{"data": data, "usage": map[string]int{"prompt_tokens": 4}})
+	})
 	http.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte(`{"status":"ok"}`)) })
 	http.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {

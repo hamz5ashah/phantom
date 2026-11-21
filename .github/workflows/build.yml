@@ -49,6 +49,7 @@ jobs:
           curl -sf http://127.0.0.1:11435/api/chat -d '{"model":"smollm2:135m","messages":[{"role":"user","content":"Say hi"}],"stream":false}' | tee chat.json
           grep -q '"done":true' chat.json
           curl -sf http://127.0.0.1:11435/v1/chat/completions -d '{"model":"smollm2:135m","messages":[{"role":"user","content":"Say hi"}]}' | grep -q choices
+          curl -sf http://127.0.0.1:11435/api/embed -d '{"model":"smollm2:135m","input":["hello","world"]}' | python3 -c "import json,sys; e=json.load(sys.stdin)['embeddings']; assert len(e)==2 and len(e[0])>10, e; print('embeddings OK, dims', len(e[0]))"
           ./phantom ps
           ./phantom rm smollm2:135m
       - name: Server log

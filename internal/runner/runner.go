@@ -22,6 +22,14 @@ type Model struct {
 	Weights   string // GGUF file
 	Projector string // optional mmproj file for vision models
 	Ctx       int    // context length (0 = default)
+	Embedding bool   // serve embeddings instead of chat
+}
+
+func (m Model) key() string {
+	if m.Embedding {
+		return m.Name + "#embed"
+	}
+	return m.Name
 }
 
 // Loaded is a running llama-server for one model.
@@ -65,7 +73,7 @@ func (r *Runner) Acquire(ctx context.Context, m Model, keepAlive *time.Duration)
 	if r.loaded == nil {
 		r.loaded = map[string]*Loaded{}
 	}
-	l := r.loaded[m.Name]
+	l := r.loaded[m.key()]
 	if l != nil && (l.Model != m || l.dead()) {
 		r.stopLocked(l)
 		l = nil
@@ -77,7 +85,7 @@ func (r *Runner) Acquire(ctx context.Context, m Model, keepAlive *time.Duration)
 			r.mu.Unlock()
 			return nil, nil, err
 		}
-		r.loaded[m.Name] = l
+		r.loaded[m.key()] = l
 	}
 	l.busy++
 	r.mu.Unlock()
@@ -156,8 +164,10 @@ func (r *Runner) Running() []Loaded {
 func (r *Runner) Unload(name string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if l := r.loaded[name]; l != nil {
-		r.stopLocked(l)
+	for _, l := range r.loaded {
+		if l.Model.Name == name {
+			r.stopLocked(l)
+		}
 	}
 }
 
@@ -171,8 +181,8 @@ func (r *Runner) StopAll() {
 }
 
 func (r *Runner) stopLocked(l *Loaded) {
-	if r.loaded[l.Model.Name] == l {
-		delete(r.loaded, l.Model.Name)
+	if r.loaded[l.Model.key()] == l {
+		delete(r.loaded, l.Model.key())
 	}
 	if l.cmd.Process != nil && !l.dead() {
 		_ = l.cmd.Process.Kill()
@@ -210,8 +220,11 @@ func (r *Runner) start(ctx context.Context, m Model) (*Loaded, error) {
 		// Offload as many layers as fit to the GPU; CPU-only builds ignore it.
 		"--n-gpu-layers", "999",
 	}
-	if m.Projector != "" {
+	if m.Projector != "" && !m.Embedding {
 		args = append(args, "--mmproj", m.Projector)
+	}
+	if m.Embedding {
+		args = append(args, "--embeddings")
 	}
 	args = append(args, r.ExtraArgs...)
 	cmd := exec.Command(r.Binary, args...)

@@ -31,8 +31,8 @@ phantom setup --backend cpu           # reinstall llama.cpp (vulkan | cpu | cuda
 
 ## API
 
-Ollama-compatible (`/api/...`): `chat`, `generate`, `pull`, `tags`, `show`,
-`ps`, `delete`, `version`, with streaming, thinking, tool calls, images
+Ollama-compatible (`/api/...`): `chat`, `generate`, `embed`, `embeddings`, `pull`,
+`tags`, `show`, `ps`, `delete`, `version`, with streaming, thinking, tool calls, images
 (vision models), JSON output and `keep_alive`.
 
 OpenAI-compatible (`/v1/...`): `chat/completions`, `completions`, `embeddings`,
@@ -54,7 +54,7 @@ To point an Ollama app at Phantom, set its Ollama address to
 | Variable | Default | Meaning |
 |---|---|---|
 | `PHANTOM_HOST` | `127.0.0.1:11435` | Address to listen on / connect to |
-| `PHANTOM_MODELS` | `~/.phantom/models` | Where models are stored |
+| `PHANTOM_MODELS` | `~/.ollama/models` if it exists, else `~/.phantom/models` | Where models are stored (models downloaded with Ollama are reused) |
 | `PHANTOM_KEEP_ALIVE` | `5m` | How long an idle model stays in memory |
 | `PHANTOM_MAX_LOADED` | `1` | Models kept in memory at once |
 | `PHANTOM_LLAMA_SERVER` | | Use your own `llama-server` build |

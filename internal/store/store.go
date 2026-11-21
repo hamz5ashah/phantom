@@ -119,7 +119,9 @@ func (n Name) String() string {
 // Store is a models directory.
 type Store struct{ Dir string }
 
-// Default opens the models directory from PHANTOM_MODELS or ~/.phantom/models.
+// Default opens the models directory: PHANTOM_MODELS, else an existing Ollama
+// models folder (same layout, so models downloaded with Ollama are reused),
+// else ~/.phantom/models.
 func Default() (*Store, error) {
 	dir := os.Getenv("PHANTOM_MODELS")
 	if dir == "" {
@@ -128,6 +130,15 @@ func Default() (*Store, error) {
 			return nil, err
 		}
 		dir = filepath.Join(home, ".phantom", "models")
+		for _, ollama := range []string{os.Getenv("OLLAMA_MODELS"), filepath.Join(home, ".ollama", "models")} {
+			if ollama == "" {
+				continue
+			}
+			if fi, err := os.Stat(filepath.Join(ollama, "manifests")); err == nil && fi.IsDir() {
+				dir = ollama
+				break
+			}
+		}
 	}
 	return &Store{Dir: dir}, os.MkdirAll(filepath.Join(dir, "blobs"), 0o755)
 }

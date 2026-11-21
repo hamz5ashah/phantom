@@ -193,6 +193,26 @@ func TestPullChatGenerateAndManage(t *testing.T) {
 		t.Fatalf("unexpected /v1 reply: %v", oa)
 	}
 
+	// Embeddings, new and old Ollama forms (served by an embedding-mode llama-server).
+	resp = postJSON(t, hs.URL+"/api/embed", map[string]any{"model": "qwen3:0.6b", "input": []string{"abc", "hello"}})
+	var emb struct{ Embeddings [][]float64 }
+	json.NewDecoder(resp.Body).Decode(&emb)
+	resp.Body.Close()
+	if len(emb.Embeddings) != 2 || emb.Embeddings[1][0] != 5 {
+		t.Fatalf("unexpected /api/embed: %+v", emb)
+	}
+	resp = postJSON(t, hs.URL+"/api/embeddings", map[string]any{"model": "qwen3:0.6b", "prompt": "abcd"})
+	var old struct{ Embedding []float64 }
+	json.NewDecoder(resp.Body).Decode(&old)
+	resp.Body.Close()
+	if len(old.Embedding) != 2 || old.Embedding[0] != 4 {
+		t.Fatalf("unexpected /api/embeddings: %+v", old)
+	}
+	s.Runner.Unload("qwen3:0.6b")
+	resp = postJSON(t, hs.URL+"/api/chat", map[string]any{"model": "qwen3:0.6b", "stream": false,
+		"messages": []map[string]string{{"role": "user", "content": "again"}}})
+	resp.Body.Close()
+
 	// The model is loaded; keep_alive 0 unloads it.
 	if n := len(s.Runner.Running()); n != 1 {
 		t.Fatalf("expected 1 loaded model, got %d", n)
