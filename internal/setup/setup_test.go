@@ -1,9 +1,17 @@
 package setup
 
 import (
+	"archive/tar"
 	"archive/zip"
+	"bytes"
+	"compress/gzip"
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -69,5 +77,55 @@ func TestUnzipRejectsPathTraversal(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "escape.txt")); err == nil {
 		t.Fatal("file escaped the target folder")
+	}
+}
+
+// Install against a fake GitHub: llama.cpp marks releases as pre-releases and
+// nests the binaries in a folder inside the archive.
+func TestInstallFromPrerelease(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("archive fixture is a tar.gz")
+	}
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	body := []byte("#!/bin/sh\necho fake\n")
+	tw.WriteHeader(&tar.Header{Name: "llama-b1/llama-server", Mode: 0o755, Size: int64(len(body)), Typeflag: tar.TypeReg})
+	tw.Write(body)
+	tw.Close()
+	gz.Close()
+
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/archive" {
+			w.Write(buf.Bytes())
+			return
+		}
+		name := "llama-b1-bin-ubuntu-x64.tar.gz"
+		switch runtime.GOOS + "/" + runtime.GOARCH {
+		case "linux/arm64":
+			name = "llama-b1-bin-ubuntu-arm64.tar.gz"
+		case "darwin/arm64":
+			name = "llama-b1-bin-macos-arm64.tar.gz"
+		case "darwin/amd64":
+			name = "llama-b1-bin-macos-x64.tar.gz"
+		}
+		json.NewEncoder(w).Encode([]map[string]any{{
+			"tag_name": "b1", "prerelease": true,
+			"assets": []map[string]any{{"name": name, "browser_download_url": srv.URL + "/archive"}},
+		}})
+	}))
+	defer srv.Close()
+	old := ReleasesAPI
+	ReleasesAPI = srv.URL + "/releases"
+	defer func() { ReleasesAPI = old }()
+
+	dir := filepath.Join(t.TempDir(), "runtime")
+	bin, err := Install(context.Background(), dir, "cpu", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(bin); err != nil || !bytes.Equal(got, body) {
+		t.Fatalf("llama-server not installed at %s: %v", bin, err)
 	}
 }

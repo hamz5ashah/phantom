@@ -63,7 +63,7 @@ func pick(assets []asset, goos, arch, backend string) (asset, error) {
 		var ok bool
 		switch backend {
 		case "cpu":
-			ok = (goos == "windows" && hasBackend("cpu")) ||
+			ok = goos == "darwin" || (goos == "windows" && hasBackend("cpu")) ||
 				(goos == "linux" && !hasBackend("vulkan") && !hasBackend("cuda") && !hasBackend("rocm") && !hasBackend("sycl") && !hasBackend("openvino") && !hasBackend("zdnn") && !strings.Contains(n, "s390x"))
 		case "metal":
 			ok = goos == "darwin"
@@ -117,9 +117,10 @@ func Install(ctx context.Context, dir, backend string, log func(string)) (string
 		Tag string
 	}
 	var a asset
-	err = errors.New("no llama.cpp releases found")
+	err = errors.New("no llama.cpp release found")
 	for _, r := range releases {
-		if r.Draft || r.Prerelease {
+		// llama.cpp marks every build as a pre-release, so only skip drafts.
+		if r.Draft {
 			continue
 		}
 		if a, err = pick(r.Assets, runtime.GOOS, runtime.GOARCH, backend); err == nil {
